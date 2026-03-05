@@ -1,0 +1,20 @@
+{
+  "author": "Ashish Sapkota",
+  "dependencies": {
+    "@provablehq/aleo-types": "^0.3.0-alpha.3",
+    "@provablehq/sdk": "^0.9.16",
+    "@types/node": "^25.3.3",
+    "bignumber.js": "^10.0.2",
+    "dotenv": "^17.3.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "main": "index.js",
+  "name": "aleo-transaction-parser",
+  "scripts": {
+    "start": "node --loader ts-node/esm src/index.ts"
+  },
+  "type": "module",
+  "version": "1.0.0"
+}
