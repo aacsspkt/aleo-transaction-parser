@@ -197,6 +197,22 @@ function parsePublicTransfer(
     console.log("Parsing transfer_public transition:", transition);
     // transfer_public inputs: [sender_record_or_addr, recipient_addr, amount]
     // Input[1] = recipient address (public), Input[2] = amount (public)
+
+    //  outputs: [
+    //     {
+    //       id: '2221493080266397082577948705279676078341888870797048480034912571028007188428field',
+    //       type: 'future',
+    //       value: '{\n' +
+    //         '  program_id: credits.aleo,\n' +
+    //         '  function_name: transfer_public,\n' +
+    //         '  arguments: [\n' +
+    //         '    aleo1sagjjc3la7cxtlvczs3mzngg9sfnz30x27y8n40kmdqysvz7yqysf4jl2k,\n' +
+    //         '    aleo124nwdusaydj0qrwuul74wg9283j7j88sh53uxqvy88fjxh2wpy9suwyad5,\n' +
+    //         '    100000u64\n' +
+    //         '  ]\n' +
+    //         '}'
+    //     }
+    //   ]
     const inputs = transition.inputs;
 
     if (!inputs) {
@@ -220,6 +236,10 @@ function parsePublicTransfer(
 
     if (!recipientInput?.value || !amountInput?.value) return null;
 
+    console.log("Our recipient:", recipientAddress);
+    console.log("Recipient:", recipientInput.value);
+    console.log("Amount:", amountInput.value);
+
     // Check this transfer is actually TO our recipient
     if (recipientInput.value !== recipientAddress) return null;
 
@@ -229,12 +249,41 @@ function parsePublicTransfer(
     const rawAmount = BigInt(amountMatch[1]!);
     const amount = toHuman(rawAmount, transition.program);
 
-    // self.caller is passed as the first finalize argument in transfer_public
-    const finalize = (transition as unknown as Record<string, unknown>)
-        .finalize as string[] | undefined;
-    const sender = finalize?.[0]?.startsWith("aleo1")
-        ? (finalize[0] ?? null)
-        : null;
+    // self.caller is passed as the first future argument in transfer_public
+    const outputs = transition.outputs || [];
+    if (outputs.length === 0) {
+        return null;
+    }
+
+    const futureOutput = outputs.find((o) => o.type.toLowerCase() === "future");
+    if (!futureOutput) {
+        return null;
+    }
+
+    let sender: string | null = null;
+    try {
+        console.log("Parsed future output value:", futureOutput.value);
+        // Format of future output value:
+        // '{\n' +
+        // '  program_id: credits.aleo,\n' +
+        // '  function_name: transfer_public,\n' +
+        // '  arguments: [\n' +
+        // '    aleo1sagjjc3la7cxtlvczs3mzngg9sfnz30x27y8n40kmdqysvz7yqysf4jl2k,\n' +
+        // '    aleo124nwdusaydj0qrwuul74wg9283j7j88sh53uxqvy88fjxh2wpy9suwyad5,\n' +
+        // '    100000u64\n' +
+        // '  ]\n' +
+        // '}'
+        // Use a regex to retrieve first argument (sender address) of arguments from the future output value
+        const senderMatch = futureOutput.value.match(
+            /arguments:\s*\[\s*([^,\s]+),/,
+        );
+        if (senderMatch) {
+            sender = senderMatch[1] ?? null;
+            console.log(`Extracted sender from future output: ${sender}`);
+        }
+    } catch (error) {
+        console.error("Failed to parse future output value as JSON:", error);
+    }
 
     return {
         transactionId: txId,
@@ -268,7 +317,7 @@ export async function decryptAleoTransfer(
 ): Promise<DecryptedTransferResult | null> {
     // 1. Derive account + view key from private key
     const viewKey = recipient.viewKey();
-    const recipientAddress = recipient.address().toString();
+    const recipientAddress = recipient.address().to_string();
 
     // 2. Fetch transaction from network
     const rpcUrl = "https://api.provable.com/v2";
@@ -322,7 +371,7 @@ export function decryptAleoTransferFromTx(
 ): DecryptedTransferResult | null {
     const account = new Account({ privateKey: privateKeyStr });
     const viewKey = account.viewKey();
-    const recipientAddress = account.address().toString();
+    const recipientAddress = account.address().to_string();
 
     if (!tx.execution) {
         return null;
@@ -352,7 +401,8 @@ async function main() {
         throw new Error("Please set RECIPIENT_PRIVATE_KEY in your .env file");
     }
 
-    const TX_ID = "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6"; // testnet
+    // const TX_ID = "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6"; // testnet aleo transfer_private
+    const TX_ID = "at1h3l9cqaw50we5rzlrgq2cl24x8q3szd5d299huapsl8uhh4kwq9swpznj8"; // testnet aleo transfer_public
     // const TX_ID = "at1qh09c53u6y5u9pap67c3k8daa6v5jh6tpx20hraxn5vvmlq4xgrsyjq44q"; // mainnet
 
     // --- Option A: fetch from network ---
