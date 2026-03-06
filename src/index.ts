@@ -30,8 +30,6 @@ export interface DecryptedTransferResult {
     rawAmount: bigint;
     /** Human-readable amount (divided by 1_000_000 for credits) */
     amount: number;
-    /** The unit field name found in the record, e.g. "microcredits" or "amount" */
-    amountField: string;
     /** Whether this was a private or public transfer */
     transferType: "private" | "public";
     /**
@@ -100,7 +98,7 @@ function decryptPrivateTransfer(
 
     const recordOutputs = transition.outputs.filter((o) => o.type === "record");
     for (const output of recordOutputs) {
-        console.log("Output JSON:", output);
+        // console.log("Output JSON:", output);
         let ciphertext: RecordCiphertext;
         try {
             ciphertext = RecordCiphertext.fromString(output.value);
@@ -151,10 +149,10 @@ function decryptPrivateTransfer(
         const senderCiphertextStr = (
             output as unknown as { sender_ciphertext?: string }
         ).sender_ciphertext;
-        const senderCiphertextPresent = !!senderCiphertextStr;
-        console.log(
-            `Sender ciphertext present: ${senderCiphertextPresent}, value: ${senderCiphertextStr}`,
-        );
+        // const senderCiphertextPresent = !!senderCiphertextStr;
+        // console.log(
+        //     `Sender ciphertext present: ${senderCiphertextPresent}, value: ${senderCiphertextStr}`,
+        // );
         let sender: string | null = null;
         if (senderCiphertextStr) {
             try {
@@ -162,7 +160,7 @@ function decryptPrivateTransfer(
                     recordViewKey,
                     Field.fromString(senderCiphertextStr),
                 ).to_string();
-                console.log(`Decrypted sender: ${JSON.stringify(sender)}`);
+                // console.log(`Decrypted sender: ${JSON.stringify(sender)}`);
             } catch {
                 // sender_ciphertext present but failed to decrypt — leave as null
             }
@@ -176,7 +174,6 @@ function decryptPrivateTransfer(
             recipient,
             rawAmount: amountInfo.raw,
             amount,
-            amountField: amountInfo.field,
             transferType: "private",
             sender,
         };
@@ -194,7 +191,7 @@ function parsePublicTransfer(
     recipientAddress: string,
     txId: string,
 ): DecryptedTransferResult | null {
-    console.log("Parsing transfer_public transition:", transition);
+    // console.log("Parsing transfer_public transition:", transition);
     // transfer_public inputs: [sender_record_or_addr, recipient_addr, amount]
     // Input[1] = recipient address (public), Input[2] = amount (public)
 
@@ -214,7 +211,7 @@ function parsePublicTransfer(
     //     }
     //   ]
     const inputs = transition.inputs;
-
+    // console.log("Inputs for transfer_public:", inputs);
     if (!inputs) {
         return null;
     }
@@ -236,10 +233,6 @@ function parsePublicTransfer(
 
     if (!recipientInput?.value || !amountInput?.value) return null;
 
-    console.log("Our recipient:", recipientAddress);
-    console.log("Recipient:", recipientInput.value);
-    console.log("Amount:", amountInput.value);
-
     // Check this transfer is actually TO our recipient
     if (recipientInput.value !== recipientAddress) return null;
 
@@ -251,35 +244,71 @@ function parsePublicTransfer(
 
     // self.caller is passed as the first future argument in transfer_public
     const outputs = transition.outputs || [];
+    // console.log("Outputs for transfer_public:", outputs);
+
     if (outputs.length === 0) {
         return null;
     }
 
     const futureOutput = outputs.find((o) => o.type.toLowerCase() === "future");
+
     if (!futureOutput) {
         return null;
     }
 
     let sender: string | null = null;
     try {
-        console.log("Parsed future output value:", futureOutput.value);
-        // Format of future output value:
-        // '{\n' +
-        // '  program_id: credits.aleo,\n' +
-        // '  function_name: transfer_public,\n' +
-        // '  arguments: [\n' +
-        // '    aleo1sagjjc3la7cxtlvczs3mzngg9sfnz30x27y8n40kmdqysvz7yqysf4jl2k,\n' +
-        // '    aleo124nwdusaydj0qrwuul74wg9283j7j88sh53uxqvy88fjxh2wpy9suwyad5,\n' +
-        // '    100000u64\n' +
-        // '  ]\n' +
-        // '}'
+        // console.log("Parsed future output value:", futureOutput.value);
         // Use a regex to retrieve first argument (sender address) of arguments from the future output value
-        const senderMatch = futureOutput.value.match(
-            /arguments:\s*\[\s*([^,\s]+),/,
+        // if the program_id is credits.aleo, otherwise retrieve the third argument for stable coin transfer
+        const programIdMatch = futureOutput.value.match(
+            /program_id:\s*([a-z0-9._]+)/,
         );
-        if (senderMatch) {
-            sender = senderMatch[1] ?? null;
-            console.log(`Extracted sender from future output: ${sender}`);
+
+        if (!programIdMatch) {
+            console.warn("Could not parse program_id from future output value");
+            return null;
+        }
+        const programId = programIdMatch[1] ?? "";
+        // console.log("Program ID from future output:", programId);
+        if (programId === "credits.aleo") {
+            // Format of future output value for credit transfer:
+            // '{\n' +
+            // '  program_id: credits.aleo,\n' +
+            // '  function_name: transfer_public,\n' +
+            // '  arguments: [\n' +
+            // '    aleo1sagjjc3la7cxtlvczs3mzngg9sfnz30x27y8n40kmdqysvz7yqysf4jl2k,\n' +
+            // '    aleo124nwdusaydj0qrwuul74wg9283j7j88sh53uxqvy88fjxh2wpy9suwyad5,\n' +
+            // '    100000u64\n' +
+            // '  ]\n' +
+            // '}'
+            // Here the sender address is in first argument
+            const firstArgMatch = futureOutput.value.match(
+                /arguments:\s*\[\s*([^,\s]+),/,
+            );
+            if (firstArgMatch) {
+                sender = firstArgMatch[1] ?? null;
+            }
+        } else {
+            // Format of future output value for stable coin transfer in transfer_public
+            // '{\n' +
+            // '  program_id: usad_stablecoin.aleo,\n' +
+            // '  function_name: transfer_public,\n' +
+            // '  arguments: [\n' +
+            // '    aleo124nwdusaydj0qrwuul74wg9283j7j88sh53uxqvy88fjxh2wpy9suwyad5,\n' +
+            // '    100000u128,\n' +
+            // '    aleo1y73q70efzq3uqx05wygyl3a33g6veva6lavwwwex39lx46glc59sa2uc3f\n' +
+            // '  ]\n' +
+            // '}'
+            // Here the sender address is in the third argument
+            // this regex should match the third argument in the arguments array handling \n
+            const thirdArgMatch = futureOutput.value.match(
+                /arguments:\s*\[\s*(?:[^\],]+,\s*){2}(aleo1[a-z0-9]+)/,
+            );
+            if (thirdArgMatch) {
+                // console.log("Third argument match for sender:", thirdArgMatch);
+                sender = thirdArgMatch[1] ?? null;
+            }
         }
     } catch (error) {
         console.error("Failed to parse future output value as JSON:", error);
@@ -293,7 +322,6 @@ function parsePublicTransfer(
         recipient: recipientInput.value,
         rawAmount,
         amount,
-        amountField: "microcredits",
         transferType: "public",
         sender,
     };
@@ -324,6 +352,8 @@ export async function decryptAleoTransfer(
 
     const networkClient = new AleoNetworkClient(rpcUrl);
     const tx = await networkClient.getTransaction(txId);
+
+    // console.log("Fetched transaction:", tx);
 
     if (!tx?.execution?.transitions?.length) {
         throw new Error(`Transaction ${txId} has no execution transitions`);
@@ -395,38 +425,52 @@ export function decryptAleoTransferFromTx(
     return null;
 }
 
+export async function parseAleoTransfers(txIds: string[], recipient: Account) {
+    await Promise.all(
+        txIds.map(async (txId) => {
+            const result = await decryptAleoTransfer(txId, recipient);
+
+            if (!result) {
+                console.log(
+                    "This transaction was not directed to the provided private key.",
+                );
+                return;
+            }
+
+            console.log("=== Transfer Details ===");
+            console.log("Transaction ID :", result.transactionId);
+            console.log("Transition ID  :", result.transitionId);
+            console.log("Program ID     :", result.programId);
+            console.log("Function       :", result.functionName);
+            console.log("Transfer Type  :", result.transferType);
+            console.log("Sender         :", result.sender ?? "(not available)");
+            console.log("Recipient      :", result.recipient);
+            console.log("Amount         :", result.rawAmount.toString());
+            console.log("Amount (human) :", result.amount);
+            console.log("\n");
+        }),
+    );
+}
+
 async function main() {
     const RECIPIENT_PRIVATE_KEY = process.env.RECIPIENT_PRIVATE_KEY;
     if (!RECIPIENT_PRIVATE_KEY) {
         throw new Error("Please set RECIPIENT_PRIVATE_KEY in your .env file");
     }
 
-    // const TX_ID = "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6"; // testnet aleo transfer_private
-    const TX_ID = "at1h3l9cqaw50we5rzlrgq2cl24x8q3szd5d299huapsl8uhh4kwq9swpznj8"; // testnet aleo transfer_public
-    // const TX_ID = "at1qh09c53u6y5u9pap67c3k8daa6v5jh6tpx20hraxn5vvmlq4xgrsyjq44q"; // mainnet
-
+    const TX_IDS = [
+        "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6",
+        "at1h3l9cqaw50we5rzlrgq2cl24x8q3szd5d299huapsl8uhh4kwq9swpznj8",
+    ]; // testnet
+    // const TX_IDS = [
+    //     "at1kgecnhkzcp2ft5nczwdrghzxrw28s8zqudl90jas8umnywy60cpqf0e536",
+    //     "at1qh09c53u6y5u9pap67c3k8daa6v5jh6tpx20hraxn5vvmlq4xgrsyjq44q",
+    //     "at1v3568y6eev9m0hu798acrm445jqzc5h5jedw4lhly69rtrksp5qsayj8py",
+    // ]; // mainnet
     // --- Option A: fetch from network ---
     console.log("Fetching and decrypting transaction...\n");
     const recipient = new Account({ privateKey: RECIPIENT_PRIVATE_KEY });
-    const result = await decryptAleoTransfer(TX_ID, recipient);
-
-    if (!result) {
-        console.log(
-            "This transaction was not directed to the provided private key.",
-        );
-        return;
-    }
-
-    console.log("=== Transfer Details ===");
-    console.log("Transaction ID :", result.transactionId);
-    console.log("Transition ID  :", result.transitionId);
-    console.log("Program ID     :", result.programId);
-    console.log("Function       :", result.functionName);
-    console.log("Transfer Type  :", result.transferType);
-    console.log("Sender         :", result.sender ?? "(not available)");
-    console.log("Recipient      :", result.recipient);
-    console.log(`Amount (${result.amountField}):`, result.rawAmount.toString());
-    console.log("Amount (human) :", result.amount);
+    await parseAleoTransfers(TX_IDS, recipient);
 }
 
 main().catch((error) => {
