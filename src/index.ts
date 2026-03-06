@@ -2,6 +2,8 @@ import process from "node:process";
 import {
     Account,
     AleoNetworkClient,
+    EncryptionToolkit,
+    Field,
     RecordCiphertext,
     type RecordPlaintext,
     type TransactionJSON,
@@ -32,6 +34,13 @@ export interface DecryptedTransferResult {
     amountField: string;
     /** Whether this was a private or public transfer */
     transferType: "private" | "public";
+    /**
+     * Sender Aleo address, or null if not recoverable.
+     * - For transfer_private: decrypted from output's sender_ciphertext using
+     *   EncryptionToolkit.decryptSenderWithRvk(recordViewKey, sender_ciphertext).
+     * - For transfer_public: extracted from transition.finalize[0] (self.caller).
+     */
+    sender: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +100,7 @@ function decryptPrivateTransfer(
 
     const recordOutputs = transition.outputs.filter((o) => o.type === "record");
     for (const output of recordOutputs) {
+        console.log("Output JSON:", output);
         let ciphertext: RecordCiphertext;
         try {
             ciphertext = RecordCiphertext.fromString(output.value);
@@ -108,9 +118,18 @@ function decryptPrivateTransfer(
 
         if (!owned) continue;
 
+        // Derive a per-record view key — reused for both decryption and sender recovery
+        const recordViewKey = EncryptionToolkit.generateRecordViewKey(
+            viewKey,
+            ciphertext,
+        );
+
         let plaintext: RecordPlaintext;
         try {
-            plaintext = ciphertext.decrypt(viewKey);
+            plaintext = EncryptionToolkit.decryptRecordWithRVk(
+                recordViewKey,
+                ciphertext,
+            );
         } catch (e) {
             throw new Error(`Failed to decrypt record: ${e}`);
         }
@@ -126,6 +145,29 @@ function decryptPrivateTransfer(
 
         const amount = toHuman(amountInfo.raw, transition.program);
 
+        // Decrypt the sender address using the record view key.
+        // sender_ciphertext is present in the API response alongside each record output
+        // but is not yet captured in the OutputJSON TypeScript type.
+        const senderCiphertextStr = (
+            output as unknown as { sender_ciphertext?: string }
+        ).sender_ciphertext;
+        const senderCiphertextPresent = !!senderCiphertextStr;
+        console.log(
+            `Sender ciphertext present: ${senderCiphertextPresent}, value: ${senderCiphertextStr}`,
+        );
+        let sender: string | null = null;
+        if (senderCiphertextStr) {
+            try {
+                sender = EncryptionToolkit.decryptSenderWithRvk(
+                    recordViewKey,
+                    Field.fromString(senderCiphertextStr),
+                ).to_string();
+                console.log(`Decrypted sender: ${JSON.stringify(sender)}`);
+            } catch {
+                // sender_ciphertext present but failed to decrypt — leave as null
+            }
+        }
+
         return {
             transactionId: txId,
             transitionId: transition.id,
@@ -136,6 +178,7 @@ function decryptPrivateTransfer(
             amount,
             amountField: amountInfo.field,
             transferType: "private",
+            sender,
         };
     }
 
@@ -151,6 +194,7 @@ function parsePublicTransfer(
     recipientAddress: string,
     txId: string,
 ): DecryptedTransferResult | null {
+    console.log("Parsing transfer_public transition:", transition);
     // transfer_public inputs: [sender_record_or_addr, recipient_addr, amount]
     // Input[1] = recipient address (public), Input[2] = amount (public)
     const inputs = transition.inputs;
@@ -185,6 +229,13 @@ function parsePublicTransfer(
     const rawAmount = BigInt(amountMatch[1]!);
     const amount = toHuman(rawAmount, transition.program);
 
+    // self.caller is passed as the first finalize argument in transfer_public
+    const finalize = (transition as unknown as Record<string, unknown>)
+        .finalize as string[] | undefined;
+    const sender = finalize?.[0]?.startsWith("aleo1")
+        ? (finalize[0] ?? null)
+        : null;
+
     return {
         transactionId: txId,
         transitionId: transition.id,
@@ -195,6 +246,7 @@ function parsePublicTransfer(
         amount,
         amountField: "microcredits",
         transferType: "public",
+        sender,
     };
 }
 
@@ -212,12 +264,11 @@ function parsePublicTransfer(
  */
 export async function decryptAleoTransfer(
     txId: string,
-    privateKeyStr: string,
+    recipient: Account,
 ): Promise<DecryptedTransferResult | null> {
     // 1. Derive account + view key from private key
-    const account = new Account({ privateKey: privateKeyStr });
-    const viewKey = account.viewKey();
-    const recipientAddress = account.address().toString();
+    const viewKey = recipient.viewKey();
+    const recipientAddress = recipient.address().toString();
 
     // 2. Fetch transaction from network
     const rpcUrl = "https://api.provable.com/v2";
@@ -301,11 +352,13 @@ async function main() {
         throw new Error("Please set RECIPIENT_PRIVATE_KEY in your .env file");
     }
 
-    const TX_ID = "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6";
+    const TX_ID = "at1xr52jse7t5zqg6fmzkclh256pndlmywyvcdjj7q00sarxtz92gpqt9w5f6"; // testnet
+    // const TX_ID = "at1qh09c53u6y5u9pap67c3k8daa6v5jh6tpx20hraxn5vvmlq4xgrsyjq44q"; // mainnet
 
     // --- Option A: fetch from network ---
     console.log("Fetching and decrypting transaction...\n");
-    const result = await decryptAleoTransfer(TX_ID, RECIPIENT_PRIVATE_KEY);
+    const recipient = new Account({ privateKey: RECIPIENT_PRIVATE_KEY });
+    const result = await decryptAleoTransfer(TX_ID, recipient);
 
     if (!result) {
         console.log(
@@ -320,6 +373,7 @@ async function main() {
     console.log("Program ID     :", result.programId);
     console.log("Function       :", result.functionName);
     console.log("Transfer Type  :", result.transferType);
+    console.log("Sender         :", result.sender ?? "(not available)");
     console.log("Recipient      :", result.recipient);
     console.log(`Amount (${result.amountField}):`, result.rawAmount.toString());
     console.log("Amount (human) :", result.amount);
